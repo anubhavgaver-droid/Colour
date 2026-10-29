@@ -1,4 +1,5 @@
 import asyncio
+import html
 import os
 
 import httpx
@@ -11,85 +12,146 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 PORT = int(os.environ.get("PORT", 10000))
 SELF_URL = os.environ.get("RENDER_EXTERNAL_URL")  # Render sets this automatically
 
+API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+PER_PAGE = 5
+BOT_USERNAME = ""
+
 app = Client(
-    "button_test",
+    "rich_button_test",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
     in_memory=True,
 )
 
+# ---------- Sample data (replace with your DB results later) ----------
+FILES = [
+    ("3.25 GB", "Dhurandhar 2025 1080p 10Bit HEVC Hindi WEB DL mkv"),
+    ("2.05 GB", "Dhurandhar 2025 1080p HEVC Hindi WEB DL mkv"),
+    ("1.87 GB", "Dhurandhar 2025 720p Hindi WEB DL 5.1 ES mkv"),
+    ("1.45 GB", "Dhurandhar 2025 720p 10Bit HEVC Hindi WEB DL mkv"),
+    ("1.20 GB", "Dhurandhar 2025 720p HEVC Hindi WEB DL ESub mkv"),
+    ("705 MB", "Dhurandhar 2025 480p Hindi WEB DL ESub mkv"),
+    ("690 MB", "Dhurandhar 2025 480p HEVC Hindi WEB DL mkv"),
+    ("1.10 GB", "Dhurandhar 2025 720p Hindi WEB DL mkv"),
+    ("2.40 GB", "Dhurandhar 2025 1080p Hindi WEB DL ESub mkv"),
+    ("900 MB", "Dhurandhar 2025 576p Hindi WEB DL mkv"),
+    ("1.60 GB", "Dhurandhar 2025 720p 10Bit Hindi WEB DL mkv"),
+    ("3.10 GB", "Dhurandhar 2025 1080p 10Bit Hindi WEB DL ESub mkv"),
+]
 
-# ---------- Raw Bot API sender (works even if Kurigram lacks `style`) ----------
-async def send_raw(chat_id: int, text: str, keyboard: list):
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "HTML",
-                "reply_markup": {"inline_keyboard": keyboard},
-            },
+
+# ---------- Rich message builders ----------
+def btn(text_html: str, data: str, style: str = "primary") -> str:
+    return (
+        f'<tg-button type="callback_data" style="{style}" '
+        f'data="{html.escape(data, quote=True)}">{text_html}</tg-button>'
+    )
+
+
+def row(*buttons: str) -> str:
+    return "<tg-button-row>" + "".join(buttons) + "</tg-button-row>"
+
+
+def build_page(page: int) -> str:
+    pages = (len(FILES) + PER_PAGE - 1) // PER_PAGE
+    page = max(0, min(page, pages - 1))
+    chunk = FILES[page * PER_PAGE:(page + 1) * PER_PAGE]
+
+    parts = ["<p><b>Search results: Dhurandhar</b></p>"]
+    for i, (size, name) in enumerate(chunk, start=page * PER_PAGE):
+        link = f"https://t.me/{BOT_USERNAME}?start=file_{i}"
+        parts.append(
+            f'<p>📁 <a href="{html.escape(link, quote=True)}">'
+            f"[{html.escape(size)}] {html.escape(name)}</a></p>"
         )
+
+    nav = []
+    if page > 0:
+        nav.append(btn("⬅ Prev", f"pg:{page - 1}"))
+    nav.append(btn(f"Page {page + 1}/{pages}", "noop"))
+    if page < pages - 1:
+        nav.append(btn("Next ➢", f"pg:{page + 1}"))
+
+    parts.append(row(btn("📦 Send All", f"sendall:{page}", "success")))
+    parts.append(row(
+        btn("🎬 Quality", "quality"),
+        btn("🌐 Language", "language"),
+        btn("📅 Year", "year"),
+    ))
+    parts.append(row(*nav))
+    parts.append(row(btn("🗑 Close", "close", "danger")))
+    return "".join(parts)
+
+
+# ---------- Raw Bot API helpers ----------
+async def api_call(method: str, payload: dict) -> dict:
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post(f"{API}/{method}", json=payload)
         return r.json()
 
 
-def main_keyboard():
-    return [
-        [{"text": "📦 Send All", "callback_data": "sendall", "style": "success"}],
-        [
-            {"text": "🎬 Quality", "callback_data": "quality", "style": "primary"},
-            {"text": "🌐 Language", "callback_data": "language", "style": "primary"},
-            {"text": "📅 Year", "callback_data": "year", "style": "primary"},
-        ],
-        [
-            {"text": "Page 1", "callback_data": "page1", "style": "primary"},
-            {"text": "Next ➢", "callback_data": "next", "style": "primary"},
-        ],
-        [{"text": "🗑 Close", "callback_data": "close", "style": "danger"}],
-    ]
+async def send_rich(chat_id: int, rich_html: str) -> dict:
+    return await api_call("sendRichMessage", {
+        "chat_id": chat_id,
+        "rich_message": {"html": rich_html},
+    })
+
+
+async def edit_rich(chat_id: int, message_id: int, rich_html: str) -> dict:
+    return await api_call("editMessageText", {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "rich_message": {"html": rich_html},
+    })
 
 
 # ---------- Handlers ----------
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
-    text = (
-        "<b>Colored button test</b>\n\n"
-        "Green = <code>success</code>\n"
-        "Blue = <code>primary</code>\n"
-        "Red = <code>danger</code>\n\n"
-        "<blockquote>Colors show only on Telegram versions released "
-        "after Feb 9, 2026.</blockquote>"
-    )
-    result = await send_raw(message.chat.id, text, main_keyboard())
-    if not result.get("ok"):
-        await message.reply_text(f"Bot API error:\n<code>{result}</code>")
-
-
-@app.on_message(filters.command("icon") & filters.private)
-async def icon_cmd(client, message):
-    """Usage: /icon <custom_emoji_id>  - tests icon_custom_emoji_id on a button."""
-    if len(message.command) < 2:
-        await message.reply_text("Usage: <code>/icon CUSTOM_EMOJI_ID</code>")
+    # Deep links like /start file_3 land here too
+    if len(message.command) > 1:
+        await message.reply_text(f"Deep link received: <code>{html.escape(message.command[1])}</code>")
         return
-    emoji_id = message.command[1]
-    keyboard = [[{
-        "text": "Icon test",
-        "callback_data": "icon",
-        "style": "success",
-        "icon_custom_emoji_id": emoji_id,
-    }]]
-    result = await send_raw(message.chat.id, "Icon button test", keyboard)
+    result = await send_rich(message.chat.id, build_page(0))
     if not result.get("ok"):
-        await message.reply_text(f"Bot API error:\n<code>{result}</code>")
+        await message.reply_text(
+            "sendRichMessage failed:\n"
+            f"<code>{html.escape(str(result))}</code>"
+        )
+
+
+@app.on_message(filters.command("emoji") & filters.private)
+async def emoji_cmd(client, message):
+    """/emoji <custom_emoji_id> : test a custom emoji icon inside a button."""
+    if len(message.command) < 2:
+        await message.reply_text("Usage: <code>/emoji CUSTOM_EMOJI_ID</code>")
+        return
+    eid = html.escape(message.command[1], quote=True)
+    rich = "<p>Custom emoji button test</p>" + row(
+        btn(f'<tg-emoji emoji-id="{eid}">📦</tg-emoji> Send All', "sendall", "success")
+    )
+    result = await send_rich(message.chat.id, rich)
+    if not result.get("ok"):
+        await message.reply_text(f"<code>{html.escape(str(result))}</code>")
 
 
 @app.on_callback_query()
 async def on_click(client, query):
-    data = query.data
+    data = query.data or ""
+    chat_id = query.message.chat.id
+    msg_id = query.message.id
+
     if data == "close":
         await query.message.delete()
+        return
+    if data.startswith("pg:"):
+        page = int(data.split(":")[1])
+        result = await edit_rich(chat_id, msg_id, build_page(page))
+        if not result.get("ok"):
+            await query.answer(str(result.get("description", "Edit failed"))[:180], show_alert=True)
+        else:
+            await query.answer()
         return
     await query.answer(f"You clicked: {data}")
 
@@ -120,10 +182,12 @@ async def self_ping():
 
 
 async def main():
+    global BOT_USERNAME
     await start_web()
     await app.start()
+    BOT_USERNAME = (await app.get_me()).username
     asyncio.create_task(self_ping())
-    print("Bot started")
+    print(f"Bot started as @{BOT_USERNAME}")
     await idle()
     await app.stop()
 
